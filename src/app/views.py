@@ -190,7 +190,7 @@ def _get_selected_provider_genres(request):
 def _get_media_list_request_filters(request):
     """Parse transient media-list filters from the URL query string."""
     selected_tags = [
-        tag.strip()
+        tag.strip().casefold()
         for tag in request.GET.get("tags", "").split(",")
         if tag.strip()
     ]

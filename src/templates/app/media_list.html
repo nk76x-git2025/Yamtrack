@@ -304,8 +304,8 @@
           {% for tag in available_tags %}
             <button type="button"
                     class="px-3 py-1 text-sm rounded-full border transition-colors cursor-pointer"
-                    :class="tags.includes('{{ tag.name|escapejs }}') ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#39404b] border-gray-700 text-gray-200 hover:bg-[#454d5a]'"
-                    @click="toggleTag('{{ tag.name|escapejs }}')"
+                    :class="tags.includes('{{ tag.normalized_name|escapejs }}') ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#39404b] border-gray-700 text-gray-200 hover:bg-[#454d5a]'"
+                    @click="toggleTag('{{ tag.normalized_name|escapejs }}')"
                     hx-get="{% url 'medialist' target_user.username media_type %}"
                     {% if media_list %} hx-target="{{ layout_class }}" {% else %} hx-target="#empty_list" {% endif %}
                     hx-include="#filter-form">{{ tag.name }}</button>
