@@ -1,6 +1,9 @@
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
+from bs4 import BeautifulSoup
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -16,6 +19,8 @@ from app.models import (
     Season,
     Sources,
     Status,
+    Tag,
+    TaggedMedia,
 )
 from events.models import Event
 
@@ -123,6 +128,126 @@ class MediaDetailsViewTests(TestCase):
             "1668",
             Sources.TMDB.value,
             [1],
+        )
+
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes", return_value=[])
+    def test_season_genre_and_tag_pills_link_to_filtered_seasons(
+        self,
+        _mock_process_episodes,
+        mock_get_metadata,
+    ):
+        """Season taxonomy pills retain text and link to normalized filters."""
+        self.user.username = "dynamic-season-owner"
+        self.user.season_sort = "last_updated"
+        self.user.save(update_fields=["username", "season_sort"])
+
+        tv_item = Item.objects.create(
+            media_id="1668",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Test TV Show",
+            image="http://example.com/tv.jpg",
+        )
+        tv = TV(item=tv_item, user=self.user)
+        TV.save_base(tv)
+        season_item = Item.objects.create(
+            media_id="1668",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Test TV Show",
+            image="http://example.com/season.jpg",
+            season_number=2,
+        )
+        season = Season(item=season_item, user=self.user, related_tv=tv)
+        Season.save_base(season)
+        tag = Tag.objects.create(
+            user=self.user,
+            name="Slice of Life",
+            normalized_name="slice of life",
+        )
+        TaggedMedia.objects.create(
+            user=self.user,
+            tag=tag,
+            content_type=ContentType.objects.get_for_model(Season),
+            object_id=season.id,
+        )
+        mock_get_metadata.return_value = {
+            "title": "Test TV Show",
+            "media_id": "1668",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "related": {"seasons": []},
+            "season/2": {
+                "title": "Test TV Show",
+                "season_title": "Season 2",
+                "media_id": "1668",
+                "media_type": MediaTypes.SEASON.value,
+                "source": Sources.TMDB.value,
+                "season_number": 2,
+                "image": "http://example.com/season.jpg",
+                "genres": ["Action & Adventure"],
+                "overview": "",
+                "details": {},
+                "episodes": [],
+                "related": {},
+                "providers": None,
+            },
+        }
+
+        response = self.client.get(
+            reverse(
+                "season_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "1668",
+                    "title": "test-tv-show",
+                    "season_number": 2,
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        soup = BeautifulSoup(response.content, "html.parser")
+        genre_link = soup.find("a", string="Action & Adventure")
+        tag_link = soup.find("a", string="Slice of Life")
+        self.assertIsNotNone(genre_link)
+        self.assertIsNotNone(tag_link)
+
+        expected_path = reverse(
+            "medialist",
+            args=[self.user.username, MediaTypes.SEASON.value],
+        )
+        genre_url = urlparse(genre_link["href"])
+        genre_query = parse_qs(genre_url.query, keep_blank_values=True)
+        self.assertEqual(genre_url.path, expected_path)
+        self.assertEqual(genre_query["genres"], ["action & adventure"])
+        self.assertEqual(genre_query["genre_mode"], ["any"])
+        self.assertEqual(genre_query["sort"], ["last_updated"])
+        self.assertEqual(genre_query["sort_direction"], ["desc"])
+        self.assertEqual(genre_query["status"], ["All"])
+        self.assertEqual(genre_query["rating_filter"], ["any"])
+        self.assertEqual(genre_query["search"], [""])
+        self.assertEqual(genre_query["layout"], ["grid"])
+        self.assertIn("genres=action+%26+adventure", genre_link["href"])
+
+        tag_url = urlparse(tag_link["href"])
+        tag_query = parse_qs(tag_url.query, keep_blank_values=True)
+        self.assertEqual(tag_url.path, expected_path)
+        self.assertEqual(tag_query["tags"], ["slice of life"])
+        self.assertIn("tags=slice+of+life", tag_link["href"])
+        self.assertIn("cursor-pointer", genre_link["class"])
+        self.assertIn("focus:ring-2", genre_link["class"])
+        self.assertIn("cursor-pointer", tag_link["class"])
+        self.assertIn("focus:ring-2", tag_link["class"])
+
+        filtered_response = self.client.get(tag_link["href"])
+        self.assertEqual(filtered_response.status_code, 200)
+        self.assertEqual(filtered_response.context["selected_tags"], ["slice of life"])
+        self.assertEqual(filtered_response.context["media_list"].paginator.count, 1)
+        self.assertContains(
+            filtered_response,
+            "tags.includes('slice of life')",
         )
 
 

@@ -1,4 +1,6 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -317,6 +319,69 @@ class AppTagsTests(TestCase):
         # Test with dict for Season
         season_dict_url = app_tags.media_url(self.season_dict)
         self.assertEqual(season_dict_url, expected_season_url)
+
+    def test_media_list_filter_url_uses_category_user_and_encoded_genre(self):
+        """Taxonomy links target the user's matching category with safe queries."""
+        username = "dynamic-filter-owner"
+        genre = "Kids' TV & Family"
+
+        for media_type in [
+            MediaTypes.TV.value,
+            MediaTypes.SEASON.value,
+            MediaTypes.MOVIE.value,
+            MediaTypes.ANIME.value,
+        ]:
+            with self.subTest(media_type=media_type):
+                user = SimpleNamespace(
+                    username=username,
+                    **{
+                        f"{media_type}_sort": "last_updated",
+                        f"{media_type}_status": "All",
+                        f"{media_type}_layout": "grid",
+                    },
+                )
+
+                result = app_tags.media_list_filter_url(
+                    user,
+                    media_type,
+                    "genres",
+                    genre,
+                )
+                parsed = urlparse(result)
+                query = parse_qs(parsed.query, keep_blank_values=True)
+
+                self.assertEqual(
+                    parsed.path,
+                    reverse("medialist", args=[username, media_type]),
+                )
+                self.assertEqual(query["genres"], ["kids' tv & family"])
+                self.assertEqual(query["genre_mode"], ["any"])
+                self.assertEqual(query["sort"], ["last_updated"])
+                self.assertEqual(query["sort_direction"], ["desc"])
+                self.assertEqual(query["status"], ["All"])
+                self.assertEqual(query["rating_filter"], ["any"])
+                self.assertEqual(query["search"], [""])
+                self.assertEqual(query["layout"], ["grid"])
+                self.assertIn("genres=kids%27+tv+%26+family", result)
+
+    def test_media_list_filter_url_normalizes_tag(self):
+        """User tag links use the normalized tags query parameter."""
+        user = SimpleNamespace(
+            username="tag-owner",
+            movie_sort="score",
+            movie_status="All",
+            movie_layout="grid",
+        )
+
+        result = app_tags.media_list_filter_url(
+            user,
+            MediaTypes.MOVIE.value,
+            "tags",
+            "  Favorite  ",
+        )
+        query = parse_qs(urlparse(result).query, keep_blank_values=True)
+
+        self.assertEqual(query["tags"], ["favorite"])
 
     def test_component_id(self):
         """Test the component_id tag."""

@@ -7,10 +7,17 @@ from django.urls import reverse
 from django.utils import formats, timezone
 from django.utils.dateparse import parse_date
 from django.utils.html import format_html
+from django.utils.http import urlencode
 from unidecode import unidecode
 
 from app import config, helpers
-from app.models import MediaTypes, Sources, Status
+from app.models import (
+    MediaTypes,
+    ProviderGenreMatchMode,
+    Sources,
+    Status,
+    normalize_provider_genre_name,
+)
 
 register = template.Library()
 
@@ -305,6 +312,34 @@ def media_url(media):
             "title": slug(title),
         },
     )
+
+
+@register.simple_tag
+def media_list_filter_url(user, media_type, filter_name, filter_value):
+    """Return a user's media-list URL with one normalized taxonomy filter."""
+    if filter_name == "genres":
+        normalized_value = normalize_provider_genre_name(filter_value)
+    elif filter_name == "tags":
+        normalized_value = str(filter_value or "").strip().casefold()
+    else:
+        msg = f"Unsupported media-list filter: {filter_name}"
+        raise ValueError(msg)
+
+    query_params = [
+        ("sort", getattr(user, f"{media_type}_sort", "score")),
+        ("sort_direction", "desc"),
+        ("status", getattr(user, f"{media_type}_status", "All")),
+        ("rating_filter", "any"),
+        ("search", ""),
+        ("layout", getattr(user, f"{media_type}_layout", "grid")),
+        ("tags", normalized_value if filter_name == "tags" else ""),
+    ]
+    if filter_name == "genres":
+        query_params.append(("genres", normalized_value))
+    query_params.append(("genre_mode", ProviderGenreMatchMode.ANY))
+
+    base_url = reverse("medialist", args=[user.username, media_type])
+    return f"{base_url}?{urlencode(query_params)}"
 
 
 @register.simple_tag

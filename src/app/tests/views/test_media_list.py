@@ -219,7 +219,7 @@ class MediaListViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["media_list"].paginator.count, 1)
-        self.assertEqual(response.context["selected_tags"], ["Comedy"])
+        self.assertEqual(response.context["selected_tags"], ["comedy"])
 
     def test_media_list_sort_direction_applies(self):
         """Test sort direction can reverse title ordering."""
@@ -394,7 +394,7 @@ class MediaListViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["media_list"].paginator.count, 1)
-        self.assertEqual(response.context["selected_tags"], ["Comedy"])
+        self.assertEqual(response.context["selected_tags"], ["comedy"])
 
         clear_response = self.client.get(
             reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])

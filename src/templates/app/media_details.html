@@ -111,7 +111,9 @@
       {# Genres #}
       <div class="flex flex-wrap gap-2 mb-4">
         {% for genre in media.genres %}
-          <span class="px-3 py-1 bg-violet-600 text-white rounded-full text-sm">{{ genre }}</span>
+          <a href="{% media_list_filter_url request.user media.media_type 'genres' genre %}"
+             class="inline-flex items-center px-3 py-1 bg-violet-600 text-white rounded-full text-sm cursor-pointer hover:opacity-80 focus:ring-2 focus:ring-indigo-400 transition"
+             aria-label="View {{ media.media_type|media_type_readable_plural }} tagged with genre {{ genre }}">{{ genre }}</a>
         {% endfor %}
       </div>
 
@@ -190,7 +192,10 @@
           </div>
           <div class="mt-2 flex flex-wrap gap-2">
             {% for tagged in current_instance.tagged_media.all %}
-              <span class="px-3 py-1 text-white rounded-full text-sm" style="background-color: var(--color-blue-400);">{{ tagged.tag.name }}</span>
+              <a href="{% media_list_filter_url request.user media.media_type 'tags' tagged.tag.normalized_name %}"
+                 class="inline-flex items-center px-3 py-1 text-white rounded-full text-sm cursor-pointer hover:opacity-80 focus:ring-2 focus:ring-indigo-400 transition"
+                 style="background-color: var(--color-blue-400);"
+                 aria-label="View {{ media.media_type|media_type_readable_plural }} tagged with {{ tagged.tag.name }}">{{ tagged.tag.name }}</a>
             {% endfor %}
           </div>
         {% endif %}
