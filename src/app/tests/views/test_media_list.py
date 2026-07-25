@@ -7,11 +7,14 @@ from django.test import TestCase
 from django.urls import reverse
 
 from app.models import (
+    Anime,
     Book,
     BookProgressUnits,
     Item,
     MediaTypes,
     Movie,
+    ProviderGenre,
+    ProviderGenreMatchMode,
     Sources,
     Status,
     Tag,
@@ -415,6 +418,274 @@ class MediaListViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["media_list"].paginator.count, 1)
+
+    def test_media_list_filters_by_single_provider_genre(self):
+        """One genre excludes tracked items without matching genre metadata."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        matching_movie = Movie.objects.first()
+        matching_movie.item.provider_genres.add(crime)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + "?genres=Crime"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["selected_genres"], ["crime"])
+        self.assertEqual(response.context["media_list"].paginator.count, 1)
+        self.assertEqual(
+            response.context["media_list"].object_list[0].item,
+            matching_movie.item,
+        )
+
+    def test_media_list_multiple_provider_genres_use_or(self):
+        """Missing genre mode defaults to Crime OR Mystery."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        mystery = ProviderGenre.objects.create(name="Mystery")
+        movies = list(Movie.objects.order_by("id")[:3])
+        movies[0].item.provider_genres.add(crime)
+        movies[1].item.provider_genres.add(mystery)
+        movies[2].item.provider_genres.add(crime, mystery)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + "?genres=crime&genres=mystery"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 3)
+        self.assertEqual(response.context["selected_genres"], ["crime", "mystery"])
+        self.assertEqual(
+            response.context["current_genre_mode"],
+            ProviderGenreMatchMode.ANY,
+        )
+
+    def test_media_list_explicit_match_any_allows_either_genre(self):
+        """Explicit match-any mode includes items with either selected genre."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        mystery = ProviderGenre.objects.create(name="Mystery")
+        movies = list(Movie.objects.order_by("id")[:3])
+        movies[0].item.provider_genres.add(crime)
+        movies[1].item.provider_genres.add(mystery)
+        movies[2].item.provider_genres.add(crime, mystery)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + "?genres=crime&genres=mystery&genre_mode=any"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 3)
+        self.assertEqual(
+            response.context["current_genre_mode"],
+            ProviderGenreMatchMode.ANY,
+        )
+
+    def test_media_list_match_all_requires_every_selected_genre(self):
+        """Match-all mode only includes items with every selected genre."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        mystery = ProviderGenre.objects.create(name="Mystery")
+        movies = list(Movie.objects.order_by("id")[:3])
+        movies[0].item.provider_genres.add(crime)
+        movies[1].item.provider_genres.add(mystery)
+        movies[2].item.provider_genres.add(crime, mystery)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + "?genres=crime&genres=mystery&genre_mode=all"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 1)
+        self.assertEqual(
+            response.context["media_list"].object_list[0].item,
+            movies[2].item,
+        )
+        self.assertEqual(
+            response.context["current_genre_mode"],
+            ProviderGenreMatchMode.ALL,
+        )
+
+    def test_media_list_invalid_genre_mode_falls_back_to_any(self):
+        """Invalid genre modes preserve the default OR behavior."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        mystery = ProviderGenre.objects.create(name="Mystery")
+        movies = list(Movie.objects.order_by("id")[:2])
+        movies[0].item.provider_genres.add(crime)
+        movies[1].item.provider_genres.add(mystery)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + "?genres=crime&genres=mystery&genre_mode=unsupported"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 2)
+        self.assertEqual(
+            response.context["current_genre_mode"],
+            ProviderGenreMatchMode.ANY,
+        )
+
+    def test_media_list_genre_modes_match_with_zero_or_one_selection(self):
+        """Any and all modes are equivalent for fewer than two genres."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        Movie.objects.first().item.provider_genres.add(crime)
+
+        for genres, expected_count in (("", 5), ("&genres=crime", 1)):
+            counts = []
+            for mode in ProviderGenreMatchMode.values:
+                response = self.client.get(
+                    reverse(
+                        "medialist",
+                        args=[self.user.username, MediaTypes.MOVIE.value],
+                    )
+                    + f"?genre_mode={mode}{genres}"
+                )
+                counts.append(response.context["media_list"].paginator.count)
+
+            with self.subTest(genres=genres):
+                self.assertEqual(counts, [expected_count, expected_count])
+
+    def test_media_list_provider_genre_combines_with_status(self):
+        """Genre filtering combines with status using AND behavior."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        completed = Movie.objects.filter(status=Status.COMPLETED.value).first()
+        in_progress = Movie.objects.filter(status=Status.IN_PROGRESS.value).first()
+        completed.item.provider_genres.add(crime)
+        in_progress.item.provider_genres.add(crime)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + f"?genres=crime&status={Status.COMPLETED.value}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 1)
+        self.assertEqual(
+            response.context["media_list"].object_list[0].status,
+            Status.COMPLETED.value,
+        )
+
+    def test_match_all_combines_with_status_and_media_type(self):
+        """Match-all remains ANDed with the status and media category filters."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        mystery = ProviderGenre.objects.create(name="Mystery")
+        completed_movie = Movie.objects.filter(
+            status=Status.COMPLETED.value
+        ).first()
+        in_progress_movie = Movie.objects.filter(
+            status=Status.IN_PROGRESS.value
+        ).first()
+        completed_movie.item.provider_genres.add(crime, mystery)
+        in_progress_movie.item.provider_genres.add(crime, mystery)
+
+        anime_item = Item.objects.create(
+            media_id="matching-anime",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Matching Anime",
+            image="https://example.com/anime.jpg",
+        )
+        anime_item.provider_genres.add(crime, mystery)
+        Anime.objects.create(
+            item=anime_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+        )
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + (
+                f"?status={Status.COMPLETED.value}"
+                "&genres=crime&genres=mystery&genre_mode=all"
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 1)
+        self.assertEqual(
+            response.context["media_list"].object_list[0].item,
+            completed_movie.item,
+        )
+
+    def test_provider_genres_are_limited_by_user_and_media_type(self):
+        """Genre choices only use the target user's current media category."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        anime_only = ProviderGenre.objects.create(name="Anime Only")
+        other_user_only = ProviderGenre.objects.create(name="Other User Only")
+        movie = Movie.objects.first()
+        movie.item.provider_genres.add(crime)
+
+        anime_item = Item.objects.create(
+            media_id="anime-genre",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Genre Anime",
+            image="https://example.com/anime.jpg",
+        )
+        anime_item.provider_genres.add(crime, anime_only)
+        Anime.objects.create(item=anime_item, user=self.user)
+
+        external_item = Item.objects.create(
+            media_id="external-genre",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="External Movie",
+            image="https://example.com/external.jpg",
+        )
+        external_item.provider_genres.add(other_user_only)
+        Movie.objects.create(item=external_item, user=self.external_user)
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+        )
+
+        available = {
+            genre.normalized_name for genre in response.context["available_genres"]
+        }
+        self.assertEqual(available, {"crime"})
+
+        filtered_response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + "?genres=crime"
+        )
+        self.assertEqual(
+            filtered_response.context["media_list"].paginator.count,
+            1,
+        )
+
+    def test_genre_query_parameters_persist_without_provider_calls(self):
+        """Genre selections are included in shared filter and layout state."""
+        crime = ProviderGenre.objects.create(name="Crime")
+        mystery = ProviderGenre.objects.create(name="Mystery")
+        movie = Movie.objects.first()
+        movie.item.provider_genres.add(crime, mystery)
+        self.mock_get_media_metadata.reset_mock()
+
+        response = self.client.get(
+            reverse("medialist", args=[self.user.username, MediaTypes.MOVIE.value])
+            + (
+                "?genres=Crime&genres=mystery&genre_mode=all"
+                "&sort=title&layout=grid"
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["selected_genres"], ["crime", "mystery"])
+        self.assertEqual(
+            response.context["current_genre_mode"],
+            ProviderGenreMatchMode.ALL,
+        )
+        self.assertContains(response, 'name="genres"')
+        self.assertContains(response, 'name="genre_mode"')
+        self.assertContains(response, "params.append('genres', genre)")
+        self.assertContains(response, "params.set('genre_mode', this.genreMode)")
+        self.assertContains(response, "`${genres.length} selected`")
+        self.assertContains(response, "Genre matching:")
+        self.assertContains(response, "Match any")
+        self.assertContains(response, "Match all")
+        self.assertContains(response, 'hx-push-url="true"')
+        self.mock_get_media_metadata.assert_not_called()
 
     def test_media_list_count_renders_for_all_category_pages(self):
         """Test category pages render the empty count without server errors."""

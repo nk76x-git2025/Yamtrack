@@ -1,10 +1,12 @@
 from pathlib import Path
 
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from app.models import (
     Item,
     MediaTypes,
+    ProviderGenre,
     Sources,
 )
 
@@ -47,3 +49,17 @@ class ItemModel(TestCase):
             episode_number=2,
         )
         self.assertEqual(str(item), "Test Show S1E2")
+
+    def test_provider_genre_normalizes_name(self):
+        """Provider genres normalize whitespace and capitalization for matching."""
+        genre = ProviderGenre.objects.create(name="  CRIME   Drama  ")
+
+        self.assertEqual(genre.name, "CRIME Drama")
+        self.assertEqual(genre.normalized_name, "crime drama")
+
+    def test_provider_genre_prevents_duplicate_capitalization(self):
+        """Provider genres are unique regardless of capitalization."""
+        ProviderGenre.objects.create(name="Crime")
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ProviderGenre.objects.create(name="crime")

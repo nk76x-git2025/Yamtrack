@@ -9,6 +9,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from app import helpers
 from app.models import Item, MediaManager, MediaTypes
+from app.provider_genres import synchronize_provider_genres
 from app.providers import services
 from lists.forms import CustomListForm
 from lists.models import CustomList, CustomListItem
@@ -279,6 +280,12 @@ def lists_modal(
             episode_number=episode_number,
             title=metadata["title"],
             image=metadata["image"],
+        )
+        synchronize_provider_genres(
+            media_type,
+            media_id,
+            source,
+            metadata,
         )
 
     custom_lists = CustomList.objects.get_user_lists_with_item(request.user, item)

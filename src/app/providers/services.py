@@ -4,6 +4,7 @@ import time
 import requests
 from defusedxml import ElementTree
 from django.conf import settings
+from django.db import OperationalError, ProgrammingError
 from pyrate_limiter import RedisBucket
 from redis import Redis
 from requests.adapters import HTTPAdapter
@@ -204,6 +205,8 @@ def get_media_metadata(
     source,
     season_numbers=None,
     episode_number=None,
+    *,
+    sync_provider_genres=True,
 ):
     """Return the metadata for the selected media."""
     if source == Sources.MANUAL.value:
@@ -242,7 +245,25 @@ def get_media_metadata(
         MediaTypes.COMIC.value: lambda: comicvine.comic(media_id),
         MediaTypes.BOARDGAME.value: lambda: bgg.boardgame(media_id),
     }
-    return metadata_retrievers[media_type]()
+    metadata = metadata_retrievers[media_type]()
+    if sync_provider_genres:
+        from app.provider_genres import (  # noqa: PLC0415
+            synchronize_provider_genres,
+        )
+
+        try:
+            synchronize_provider_genres(
+                media_type,
+                media_id,
+                source,
+                metadata,
+            )
+        except (OperationalError, ProgrammingError):
+            logger.exception(
+                "Provider genre tables are not available yet; "
+                "skipping synchronization.",
+            )
+    return metadata
 
 
 def search(media_type, query, page, source=None):

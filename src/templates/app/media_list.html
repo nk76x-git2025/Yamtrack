@@ -22,7 +22,7 @@
     </div>
   {% endif %}
 
-  <div x-data="{ sort: '{{ current_sort }}', sortDirection: '{{ current_sort_direction|default:"desc" }}', status: '{{ current_status }}', ratingFilter: '{{ current_rating_filter }}', layout: '{{ current_layout }}', search: '{{ request.GET.search|default:''|escapejs }}', tags: '{{ request.GET.tags|default:''|escapejs }}'.split(',').filter(Boolean), resultCountText: '{{ result_count_text|escapejs }}', get tagsParam() { return this.tags.join(','); }, toggleTag(tag) { this.tags.includes(tag) ? this.tags = this.tags.filter(t => t !== tag) : this.tags.push(tag); }, clearTags() { this.tags = []; }, get baseQuery() { const params = new URLSearchParams(); if (this.search) params.set('search', this.search); if (this.status !== 'All') params.set('status', this.status); if (this.ratingFilter !== 'any') params.set('rating_filter', this.ratingFilter); if (this.sort !== 'score') params.set('sort', this.sort); if (this.sortDirection !== 'desc') params.set('sort_direction', this.sortDirection); if (this.tags.length) params.set('tags', this.tagsParam); return params.toString(); }, layoutUrl(nextLayout) { const query = this.baseQuery; return `{% url 'medialist' target_user.username media_type %}?${query ? query + '&' : ''}layout=${nextLayout}`; }, statusLabels: {
+  <div x-data="{ sort: '{{ current_sort }}', sortDirection: '{{ current_sort_direction|default:"desc" }}', status: '{{ current_status }}', ratingFilter: '{{ current_rating_filter }}', layout: '{{ current_layout }}', search: '{{ request.GET.search|default:''|escapejs }}', tags: '{{ request.GET.tags|default:''|escapejs }}'.split(',').filter(Boolean), genres: [{% for genre in selected_genres %}'{{ genre|escapejs }}'{% if not forloop.last %}, {% endif %}{% endfor %}], genreMode: '{{ current_genre_mode }}', genreSearch: '', resultCountText: '{{ result_count_text|escapejs }}', get tagsParam() { return this.tags.join(','); }, toggleTag(tag) { this.tags.includes(tag) ? this.tags = this.tags.filter(t => t !== tag) : this.tags.push(tag); }, clearTags() { this.tags = []; }, toggleGenre(genre) { this.genres.includes(genre) ? this.genres = this.genres.filter(item => item !== genre) : this.genres.push(genre); }, clearGenres() { this.genres = []; }, get baseQuery() { const params = new URLSearchParams(); if (this.search) params.set('search', this.search); if (this.status !== 'All') params.set('status', this.status); if (this.ratingFilter !== 'any') params.set('rating_filter', this.ratingFilter); if (this.sort !== 'score') params.set('sort', this.sort); if (this.sortDirection !== 'desc') params.set('sort_direction', this.sortDirection); if (this.tags.length) params.set('tags', this.tagsParam); this.genres.forEach(genre => params.append('genres', genre)); params.set('genre_mode', this.genreMode); return params.toString(); }, layoutUrl(nextLayout) { const query = this.baseQuery; return `{% url 'medialist' target_user.username media_type %}?${query ? query + '&' : ''}layout=${nextLayout}`; }, statusLabels: {
     {% for value, label in status_choices %}
       '{{ value }}': '{{ label }}'
       {% if not forloop.last %},{% endif %}
@@ -52,6 +52,10 @@
       <input type="hidden" name="search" x-model="search">
       <input type="hidden" name="layout" x-model="layout">
       <input type="hidden" name="tags" :value="tagsParam">
+      <template x-for="genre in genres" :key="genre">
+        <input type="hidden" name="genres" :value="genre">
+      </template>
+      <input type="hidden" name="genre_mode" x-model="genreMode">
     </form>
 
     <div class="flex flex-col md:flex-row gap-4 mb-6">
@@ -204,6 +208,86 @@
     <div class="-mt-2 mb-4">
       {% include "app/components/media_result_count.html" %}
     </div>
+
+    {% if available_genres or selected_genres %}
+      <div class="mb-6 rounded-lg border border-gray-700 bg-[#2f353d]"
+           x-data="{ open: false }">
+        <button type="button"
+                class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-[#39404b] transition-colors cursor-pointer"
+                @click="open = !open"
+                :aria-expanded="open">
+          <span class="flex min-w-0 items-center gap-2">
+            {% include "app/icons/funnel.svg" with classes="w-4 h-4 shrink-0 text-violet-400" %}
+            <span class="font-medium">Genres</span>
+            <span x-show="genres.length"
+                  x-cloak
+                  class="rounded-full bg-violet-600 px-2 py-0.5 text-xs text-white"
+                  x-text="`${genres.length} selected`"></span>
+          </span>
+          <span :class="open ? 'rotate-180' : ''"
+                class="transition-transform">{% include "app/icons/chevron-down.svg" with classes="w-4 h-4" %}</span>
+        </button>
+
+        <div x-show="open"
+             x-cloak
+             class="border-t border-gray-700 px-4 py-4">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div class="relative grow">
+              <input type="search"
+                     x-model="genreSearch"
+                     placeholder="Search genres..."
+                     class="w-full rounded-md bg-[#39404b] py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#4a9eff]">
+              {% include "app/icons/magnifying-glass.svg" with classes="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" %}
+            </div>
+            <button type="button"
+                    class="self-start text-sm text-gray-300 underline hover:text-white disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
+                    :disabled="!genres.length"
+                    @click="clearGenres()"
+                    hx-get="{% url 'medialist' target_user.username media_type %}"
+                    hx-push-url="true"
+                    {% if media_list %} hx-target="{{ layout_class }}" {% else %} hx-target="#empty_list" {% endif %}
+                    hx-include="#filter-form"
+                    hx-indicator="#loading-indicator">Clear selected genres</button>
+          </div>
+
+          <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            <span class="text-gray-300">Genre matching:</span>
+            <div class="inline-flex overflow-hidden rounded-md border border-gray-700"
+                 role="group"
+                 aria-label="Genre matching">
+              {% for value, label in genre_mode_choices %}
+                <button type="button"
+                        class="px-3 py-1.5 transition-colors cursor-pointer"
+                        :class="genreMode === '{{ value }}' ? 'bg-violet-600 text-white' : 'bg-[#39404b] text-gray-200 hover:bg-[#454d5a]'"
+                        @click="genreMode = '{{ value }}'"
+                        hx-get="{% url 'medialist' target_user.username media_type %}"
+                        hx-push-url="true"
+                        {% if media_list %} hx-target="{{ layout_class }}" {% else %} hx-target="#empty_list" {% endif %}
+                        hx-include="#filter-form"
+                        hx-indicator="#loading-indicator">{{ label }}</button>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="mt-3 max-h-56 overflow-y-auto pr-1">
+            <div class="flex flex-wrap gap-2">
+              {% for genre in available_genres %}
+                <button type="button"
+                        x-show="'{{ genre.normalized_name|escapejs }}'.includes(genreSearch.trim().toLowerCase())"
+                        class="rounded-full border px-3 py-1 text-sm transition-colors cursor-pointer"
+                        :class="genres.includes('{{ genre.normalized_name|escapejs }}') ? 'bg-violet-600 border-violet-500 text-white' : 'bg-[#39404b] border-gray-700 text-gray-200 hover:bg-[#454d5a]'"
+                        @click="toggleGenre('{{ genre.normalized_name|escapejs }}')"
+                        hx-get="{% url 'medialist' target_user.username media_type %}"
+                        hx-push-url="true"
+                        {% if media_list %} hx-target="{{ layout_class }}" {% else %} hx-target="#empty_list" {% endif %}
+                        hx-include="#filter-form"
+                        hx-indicator="#loading-indicator">{{ genre.name }}</button>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endif %}
 
     {% if available_tags %}
       <div class="mb-6">

@@ -5,13 +5,14 @@ from django.contrib import admin
 from django.contrib.admin.sites import AlreadyRegistered
 
 from app.models import (
-    Tag,
-    TaggedMedia,
+    CategoryLink,
+    CustomLink,
     Episode,
     Item,
+    ProviderGenre,
+    Tag,
+    TaggedMedia,
     UserMessage,
-    CustomLink,
-    CategoryLink,
 )
 
 
@@ -38,6 +39,14 @@ class EpisodeAdmin(admin.ModelAdmin):
 
     search_fields = ["item__title", "related_season__item__title"]
     list_display = ["__str__", "end_date"]
+
+
+@admin.register(ProviderGenre)
+class ProviderGenreAdmin(admin.ModelAdmin):
+    """Admin for provider-supplied genres."""
+
+    search_fields = ["name", "normalized_name"]
+    list_display = ["name", "normalized_name"]
 
 
 @admin.register(UserMessage)
@@ -107,6 +116,7 @@ SpecialModels = [
     "CategoryLink",
     "Tag",
     "TaggedMedia",
+    "ProviderGenre",
     "ExperienceVisit",
 ]
 for model in app_models:

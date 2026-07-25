@@ -17,8 +17,10 @@ from django.db import models
 from django.db.models import (
     CheckConstraint,
     Count,
+    Exists,
     F,
     Max,
+    OuterRef,
     Prefetch,
     Q,
     UniqueConstraint,
@@ -96,6 +98,49 @@ class BookProgressUnits(models.TextChoices):
     HOURS = "hours", "Hours"
 
 
+class ProviderGenreMatchMode(models.TextChoices):
+    """Supported ways to combine selected provider genres."""
+
+    ANY = "any", "Match any"
+    ALL = "all", "Match all"
+
+
+def normalize_provider_genre_name(name):
+    """Return a stable, case-insensitive provider genre name."""
+    return " ".join(str(name or "").split()).casefold()
+
+
+class ProviderGenre(models.Model):
+    """A normalized genre supplied by an external metadata provider."""
+
+    name = models.CharField(max_length=100)
+    normalized_name = models.CharField(max_length=100, editable=False)
+
+    class Meta:
+        """Meta options for provider genres."""
+
+        ordering = ["name"]
+        constraints = [
+            UniqueConstraint(
+                fields=["normalized_name"],
+                name="unique_provider_genre_normalized_name",
+            ),
+        ]
+
+    def __str__(self):
+        """Return the provider genre display name."""
+        return self.name
+
+    def save(self, *args, **kwargs):
+        """Normalize the display and comparison names before saving."""
+        self.name = " ".join(str(self.name or "").split())[:100]
+        self.normalized_name = normalize_provider_genre_name(self.name)
+        if not self.normalized_name:
+            msg = "Provider genre names cannot be empty."
+            raise ValidationError(msg)
+        super().save(*args, **kwargs)
+
+
 class Item(CalendarTriggerMixin, models.Model):
     """Model to store basic information about media items."""
 
@@ -122,6 +167,11 @@ class Item(CalendarTriggerMixin, models.Model):
             FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png", "webp"]),
             validate_manual_item_image_size,
         ],
+    )
+    provider_genres = models.ManyToManyField(
+        ProviderGenre,
+        related_name="items",
+        blank=True,
     )
     season_number = models.PositiveIntegerField(null=True, blank=True)
     episode_number = models.PositiveIntegerField(null=True, blank=True)
@@ -253,6 +303,16 @@ class Item(CalendarTriggerMixin, models.Model):
                     title=tv_metadata["title"],
                     image=tv_metadata["image"],
                 )
+                from app.provider_genres import (  # noqa: PLC0415
+                    synchronize_provider_genres,
+                )
+
+                synchronize_provider_genres(
+                    MediaTypes.TV.value,
+                    self.media_id,
+                    self.source,
+                    tv_metadata,
+                )
                 logger.info("Created TV item %s for season %s", tv_item, self)
 
             # Process the TV item instead of the season
@@ -283,6 +343,8 @@ class MediaManager(models.Manager):
         search=None,
         tag_names=None,
         rating_filter=None,
+        genre_names=None,
+        genre_mode=ProviderGenreMatchMode.ANY,
     ):
         """Get media list based on filters, sorting and search."""
         model = apps.get_model(app_label="app", model_name=media_type)
@@ -299,6 +361,20 @@ class MediaManager(models.Manager):
                     tagged_media__tag__user=user,
                     tagged_media__tag__normalized_name=tag_name.lower(),
                 )
+        if genre_names:
+            if genre_mode == ProviderGenreMatchMode.ALL:
+                for genre_name in genre_names:
+                    matching_genre = ProviderGenre.objects.filter(
+                        items=OuterRef("item_id"),
+                        normalized_name=genre_name,
+                    )
+                    queryset = queryset.filter(Exists(matching_genre))
+            else:
+                matching_genres = ProviderGenre.objects.filter(
+                    items=OuterRef("item_id"),
+                    normalized_name__in=genre_names,
+                )
+                queryset = queryset.filter(Exists(matching_genres))
 
         queryset = self._apply_rating_filter(queryset, rating_filter)
 
@@ -1376,6 +1452,7 @@ class TV(Media):
             self.item.source,
             season_numbers,
         )
+        parent_genres = list(self.item.provider_genres.all())
         for season_number in season_numbers:
             season_metadata = tv_with_seasons_metadata[f"season/{season_number}"]
 
@@ -1389,6 +1466,8 @@ class TV(Media):
                     "image": season_metadata["image"],
                 },
             )
+            if parent_genres:
+                item.provider_genres.set(parent_genres)
             try:
                 season_instance = Season.objects.get(
                     item=item,
@@ -1496,6 +1575,7 @@ class TV(Media):
             self.item.source,
         )
         related_seasons = tv_metadata.get("related", {}).get("seasons", [])
+        parent_genres = list(self.item.provider_genres.all())
 
         season_started = False
         started_season_number = None
@@ -1529,6 +1609,8 @@ class TV(Media):
                         "image": season_data["image"],
                     },
                 )
+                if parent_genres:
+                    item.provider_genres.set(parent_genres)
 
                 next_unwatched_season = Season(
                     item=item,
@@ -1943,6 +2025,16 @@ class Season(Media):
                     "title": tv_metadata["title"],
                     "image": tv_metadata["image"],
                 },
+            )
+            from app.provider_genres import (  # noqa: PLC0415
+                synchronize_provider_genres,
+            )
+
+            synchronize_provider_genres(
+                MediaTypes.TV.value,
+                self.item.media_id,
+                self.item.source,
+                tv_metadata,
             )
 
             tv = TV(

@@ -11,6 +11,7 @@ from django_celery_beat.models import PeriodicTask
 import app
 from app import helpers as app_helpers
 from app.models import MediaTypes, Sources, Status
+from app.provider_genres import synchronize_provider_genres
 from app.providers import services
 from integrations.imports import helpers
 from integrations.imports.helpers import MediaImportError, MediaImportUnexpectedError
@@ -381,6 +382,12 @@ class TraktImporter:
         item, _ = app.models.Item.objects.get_or_create(
             **item_kwargs,
             defaults=defaults,
+        )
+        synchronize_provider_genres(
+            media_type,
+            tmdb_id,
+            Sources.TMDB.value,
+            metadata,
         )
 
         return item
