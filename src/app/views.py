@@ -29,12 +29,16 @@ from app.models import (
     CategoryLink,
     Item,
     MediaTypes,
+    ProviderGenre,
+    ProviderGenreMatchMode,
     Season,
     Sources,
     Status,
     Tag,
     UserMessage,
+    normalize_provider_genre_name,
 )
+from app.provider_genres import synchronize_provider_genres
 from app.providers import manual, services, tmdb
 from app.templatetags import app_tags
 from users.models import (
@@ -146,12 +150,14 @@ def _get_result_count_context(filtered_count, *, has_active_filters):
 def _has_active_media_filters(
     search_query,
     selected_tags,
+    selected_genres,
     status_filter,
     rating_filter,
 ):
     return bool(
         search_query
         or selected_tags
+        or selected_genres
         or status_filter != MediaStatusChoices.ALL
         or rating_filter != MediaRatingChoices.ANY
     )
@@ -169,6 +175,56 @@ def _render_media_list_response(request, template_name, context):
     if request.headers.get("HX-Request"):
         _add_result_count_trigger(response, context["result_count_text"])
     return response
+
+
+def _get_selected_provider_genres(request):
+    """Return normalized, deduplicated genre query parameters."""
+    selected_genres = []
+    for genre in request.GET.getlist("genres"):
+        normalized_genre = normalize_provider_genre_name(genre)
+        if normalized_genre:
+            selected_genres.append(normalized_genre)
+    return list(dict.fromkeys(selected_genres))
+
+
+def _get_media_list_request_filters(request):
+    """Parse transient media-list filters from the URL query string."""
+    selected_tags = [
+        tag.strip()
+        for tag in request.GET.get("tags", "").split(",")
+        if tag.strip()
+    ]
+    sort_direction = request.GET.get("sort_direction", "desc")
+    if sort_direction not in {"asc", "desc"}:
+        sort_direction = "desc"
+    rating_filter = request.GET.get("rating_filter", MediaRatingChoices.ANY)
+    if rating_filter not in MediaRatingChoices.values:
+        rating_filter = MediaRatingChoices.ANY
+    genre_mode = request.GET.get(
+        "genre_mode",
+        ProviderGenreMatchMode.ANY,
+    )
+    if genre_mode not in ProviderGenreMatchMode.values:
+        genre_mode = ProviderGenreMatchMode.ANY
+    return {
+        "search_query": request.GET.get("search", ""),
+        "selected_tags": list(dict.fromkeys(selected_tags)),
+        "selected_genres": _get_selected_provider_genres(request),
+        "genre_mode": genre_mode,
+        "page": request.GET.get("page", 1),
+        "sort_direction": sort_direction,
+        "rating_filter": rating_filter,
+    }
+
+
+def _get_available_provider_genres(media_model, target_user):
+    """Return genres used by a user's tracked items in one media category."""
+    tracked_item_ids = media_model.objects.filter(user=target_user).values("item_id")
+    return (
+        ProviderGenre.objects.filter(items__id__in=tracked_item_ids)
+        .distinct()
+        .order_by("normalized_name")
+    )
 
 
 @login_not_required
@@ -222,20 +278,14 @@ def media_list(request, username, media_type):
             request.GET.get("status"),
         )
 
-    search_query = request.GET.get("search", "")
-    selected_tags = [
-        tag.strip()
-        for tag in request.GET.get("tags", "").split(",")
-        if tag.strip()
-    ]
-    selected_tags = list(dict.fromkeys(selected_tags))
-    page = request.GET.get("page", 1)
-    sort_direction = request.GET.get("sort_direction", "desc")
-    if sort_direction not in {"asc", "desc"}:
-        sort_direction = "desc"
-    rating_filter = request.GET.get("rating_filter", MediaRatingChoices.ANY)
-    if rating_filter not in MediaRatingChoices.values:
-        rating_filter = MediaRatingChoices.ANY
+    request_filters = _get_media_list_request_filters(request)
+    search_query = request_filters["search_query"]
+    selected_tags = request_filters["selected_tags"]
+    selected_genres = request_filters["selected_genres"]
+    genre_mode = request_filters["genre_mode"]
+    page = request_filters["page"]
+    sort_direction = request_filters["sort_direction"]
+    rating_filter = request_filters["rating_filter"]
 
     # Prepare status filter for database query
     if not status_filter:
@@ -250,6 +300,8 @@ def media_list(request, username, media_type):
         sort_direction=sort_direction,
         search=search_query,
         tag_names=selected_tags,
+        genre_names=selected_genres,
+        genre_mode=genre_mode,
         rating_filter=rating_filter,
     )
 
@@ -266,6 +318,7 @@ def media_list(request, username, media_type):
         .distinct()
         .order_by("name")
     )
+    available_genres = _get_available_provider_genres(media_model, target_user)
 
     # Paginate results
     items_per_page = 32
@@ -286,6 +339,7 @@ def media_list(request, username, media_type):
             has_active_filters=_has_active_media_filters(
                 search_query,
                 selected_tags,
+                selected_genres,
                 status_filter,
                 rating_filter,
             ),
@@ -302,6 +356,10 @@ def media_list(request, username, media_type):
         "target_user": target_user,
         "available_tags": available_tags,
         "selected_tags": selected_tags,
+        "available_genres": available_genres,
+        "selected_genres": selected_genres,
+        "current_genre_mode": genre_mode,
+        "genre_mode_choices": ProviderGenreMatchMode.choices,
     }
 
     # Handle HTMX requests for partial updates
@@ -525,6 +583,7 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
             media_id,
             source,
             [season_number],
+            sync_provider_genres=False,
         )
         item, _ = Item.objects.update_or_create(
             media_id=media_id,
@@ -535,6 +594,12 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
                 "title": metadata["title"],
                 "image": metadata["image"],
             },
+        )
+        synchronize_provider_genres(
+            media_type,
+            media_id,
+            source,
+            metadata,
         )
         title = metadata["title"]
         if season_number:
@@ -706,6 +771,7 @@ def media_save(request):
             media_id,
             source,
             [season_number],
+            sync_provider_genres=False,
         )
         item, _ = Item.objects.get_or_create(
             media_id=media_id,
@@ -716,6 +782,12 @@ def media_save(request):
                 "title": metadata["title"],
                 "image": metadata["image"],
             },
+        )
+        synchronize_provider_genres(
+            media_type,
+            media_id,
+            source,
+            metadata,
         )
         model = apps.get_model(app_label="app", model_name=media_type)
         instance = model(item=item, user=request.user)
@@ -822,6 +894,7 @@ def episode_save(request):
             media_id,
             source,
             [season_number],
+            sync_provider_genres=False,
         )
         season_metadata = tv_with_seasons_metadata[f"season/{season_number}"]
 
@@ -834,6 +907,12 @@ def episode_save(request):
                 "title": tv_with_seasons_metadata["title"],
                 "image": season_metadata["image"],
             },
+        )
+        synchronize_provider_genres(
+            "tv_with_seasons",
+            media_id,
+            source,
+            tv_with_seasons_metadata,
         )
         related_season = Season.objects.create(
             item=item,

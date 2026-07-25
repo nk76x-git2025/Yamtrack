@@ -9,6 +9,7 @@ from django.utils.dateparse import parse_datetime
 import app
 from app import config
 from app.models import MediaTypes, Sources
+from app.provider_genres import synchronize_provider_genres
 from app.providers import services
 from app.templatetags import app_tags
 from integrations.imports import helpers
@@ -120,8 +121,9 @@ class YamtrackImporter:
         ):
             return
 
+        provider_metadata = None
         if row["title"] == "" or row["image"] == "":
-            self._handle_missing_metadata(
+            provider_metadata = self._handle_missing_metadata(
                 row,
                 media_type,
                 season_number,
@@ -139,6 +141,13 @@ class YamtrackImporter:
                 "image": row["image"],
             },
         )
+        if provider_metadata is not None:
+            synchronize_provider_genres(
+                media_type,
+                row["media_id"],
+                row["source"],
+                provider_metadata,
+            )
 
         model = apps.get_model(app_label="app", model_name=media_type)
         instance = model(item=item)
@@ -165,7 +174,7 @@ class YamtrackImporter:
         """Handle missing metadata by fetching from provider."""
         if row["source"] == Sources.MANUAL.value and row["image"] == "":
             row["image"] = settings.IMG_NONE
-            return
+            return None
 
         if row.get("media_id", "") != "":
             metadata = services.get_media_metadata(
@@ -177,7 +186,7 @@ class YamtrackImporter:
             )
             row["title"] = metadata["title"]
             row["image"] = metadata["image"]
-            return
+            return metadata
 
         if row.get("title", "") != "":
             source = row.get("source", "")
@@ -200,7 +209,7 @@ class YamtrackImporter:
 
             logger.info("Added title from %s: %s", source, row["title"])
             logger.info("Obtained media id: %s", row["media_id"])
-            return
+            return None
 
         msg = f"Missing metadata for: {row}"
         raise MediaImportError(msg)

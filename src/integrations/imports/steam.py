@@ -7,6 +7,7 @@ from django.conf import settings
 
 import app
 from app.models import MediaTypes, Sources, Status
+from app.provider_genres import synchronize_provider_genres
 from app.providers import services
 from app.providers.igdb import ExternalGameSource, external_game
 from integrations.imports import helpers
@@ -214,6 +215,12 @@ class SteamImporter:
                     "image": igdb_game["image"],
                 },
             )
+            synchronize_provider_genres(
+                MediaTypes.GAME.value,
+                media_id,
+                Sources.IGDB.value,
+                igdb_game,
+            )
 
             # Determine status based on playtime
             status = self._determine_game_status(playtime_forever, playtime_2weeks)
@@ -327,6 +334,7 @@ class SteamImporter:
             "media_type": MediaTypes.GAME.value,
             "title": game_details.get("title", game_name),
             "image": game_details["image"],
+            "genres": game_details.get("genres"),
         }
         logger.debug(
             "Matched Steam game %s (appid: %s) with IGDB ID %s via external_game",
